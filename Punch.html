@@ -1,0 +1,1386 @@
+<!DOCTYPE html>
+<html lang="fr-CA">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Suivi de temps — Nova</title>
+
+  <!--
+  ==========================================================
+  GUIDE RAPIDE (ouvrir ce fichier dans un navigateur moderne)
+  ----------------------------------------------------------
+  1) Onglet "Aujourd’hui" : appuie sur **Entrée**, puis **Début pause**, **Fin pause**, et **Sortie**.
+  2) Ajoute ton **taux horaire** dans Paramètres (par défaut 20,00 $/h).
+  3) L’onglet **Semaine** affiche les totaux et le salaire de Lundi→Dimanche.
+  4) **Historique** : exporte CSV/JSON, importe un JSON précédemment exporté.
+  5) **Saisie manuelle** : crée/édite/supprime une journée oubliée (validation incluse).
+  6) Thème clair/sombre dans **Paramètres** (+ bouton Démo pour générer une semaine factice).
+  7) Données sauvegardées en local (**localStorage**) sous la clé `novaTimeTracker`.
+  ==========================================================
+
+  SCÉNARIOS DE TEST (attendus)
+  ----------------------------
+  • 08:00 Entrée, 12:00–12:30 Pause, 16:15 Sortie ⇒ 7:45 (7,75 h). À 20$/h ⇒ 155,00 $.
+  • 22:00 Entrée, 02:00 Sortie (lendemain), pas de pause ⇒ 4:00 (4,00 h).
+  • Pause ouverte (Début pause sans Fin) : l’affichage live soustrait la pause en cours mais n’enregistre pas définitivement.
+  • Arrondi 15 min : 7:45 ⇒ 7:45 (déjà sur un quart), 7:38 ⇒ 7:30, 7:52 ⇒ 8:00 pour le **payable**.
+  • Export CSV : aucune erreur console, le fichier contient des retours ligne `\n`, et les champs avec virgules/retours ligne sont bien quotés.
+  • Import JSON : un JSON exporté juste avant se réimporte sans perte, avec confirmation en cas de conflit de dates.
+  -->
+
+  <style>
+    :root{
+      --bg: #ffffff;
+      --fg: #0d0d0f;
+      --muted:#727278;
+      --card:#f5f6f8;
+      --accent:#2f6fed;
+      --accent-2:#0f62fe;
+      --good:#1a9d5c;
+      --warn:#d17a00;
+      --bad:#d12f3f;
+      --border:#e6e7eb;
+      --ring: 0 0 0 3px rgba(47,111,237,0.2);
+      --shadow: 0 6px 24px rgba(0,0,0,0.08);
+      --radius: 16px;
+      --touch: 48px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Inter, Arial, system-ui, sans-serif;
+    }
+    [data-theme="dark"]{
+      --bg:#0b0c0f;
+      --fg:#eef0f6;
+      --muted:#a7aab6;
+      --card:#141720;
+      --accent:#6ea3ff;
+      --accent-2:#5b8bff;
+      --good:#33c57a;
+      --warn:#ffb04d;
+      --bad:#ff6b7a;
+      --border:#262a36;
+      --shadow: 0 6px 24px rgba(0,0,0,0.45);
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0; background:var(--bg); color:var(--fg); font-family:var(--font);
+      -webkit-font-smoothing:antialiased; line-height:1.35;
+    }
+    header.appbar{
+      position:sticky; top:0; z-index:20; backdrop-filter:saturate(1.2) blur(8px);
+      background: color-mix(in oklab, var(--bg) 92%, transparent);
+      border-bottom:1px solid var(--border);
+    }
+    .topbar{
+      display:flex; align-items:center; justify-content:space-between; gap:8px;
+      padding:10px 14px;
+    }
+    .brand{font-weight:700; letter-spacing:.2px}
+    .tabs{
+      display:flex; gap:6px; overflow:auto; padding:8px 10px 12px; border-top:1px solid var(--border);
+    }
+    .tab{
+      appearance:none; border:none; background:transparent; color:var(--muted); padding:10px 12px;
+      border-radius:12px; font-weight:600; white-space:nowrap; cursor:pointer;
+    }
+    .tab[aria-selected="true"]{ background:var(--card); color:var(--fg); box-shadow: var(--shadow) }
+    main{ padding:14px; max-width:1100px; margin:0 auto 96px}
+    section.panel{ display:none; }
+    section.panel[aria-hidden="false"]{ display:block; }
+    .statusbar{
+      display:flex; gap:10px; align-items:center; justify-content:space-between; flex-wrap:wrap;
+      background:var(--card); padding:12px; border-radius:var(--radius); box-shadow:var(--shadow);
+    }
+    .badge{ padding:6px 10px; border-radius:999px; font-weight:700; font-size:12px }
+    .b-work{ background: color-mix(in oklab, var(--good) 18%, transparent); color: var(--good) }
+    .b-pause{ background: color-mix(in oklab, var(--warn) 20%, transparent); color: var(--warn) }
+    .b-end{ background: color-mix(in oklab, var(--muted) 20%, transparent); color: var(--muted) }
+    .grid{ display:grid; gap:12px }
+    .card{ background:var(--card); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow) }
+    .card > .hd{ padding:12px 14px; border-bottom:1px solid var(--border); font-weight:700 }
+    .card > .bd{ padding:12px 14px }
+    .row{ display:flex; gap:10px; align-items:center; flex-wrap:wrap }
+    .grow{ flex:1 1 auto }
+    .controls{ display:grid; grid-template-columns:1fr 1fr; gap:10px }
+    @media(min-width:700px){ .controls{ grid-template-columns:repeat(4,1fr) } }
+    button, .btn{
+      appearance:none; border:none; background:var(--fg); color:var(--bg);
+      padding:14px 12px; border-radius:14px; font-weight:800; cursor:pointer; min-height:var(--touch);
+    }
+    .btn.secondary{ background:transparent; color:var(--fg); border:1px solid var(--border) }
+    .btn.ghost{ background:transparent; color:var(--muted) }
+    .btn.accent{ background:var(--accent) }
+    .btn.warn{ background:var(--warn); color:#111 }
+    .btn.danger{ background:var(--bad) }
+    .btn:focus-visible{ outline:none; box-shadow:var(--ring) }
+    input, select, textarea{
+      width:100%; padding:12px 12px; min-height:var(--touch);
+      border-radius:12px; border:1px solid var(--border); background:color-mix(in oklab, var(--bg) 98%, transparent);
+      color:var(--fg); font:inherit;
+    }
+    label{ font-weight:600; font-size:13px; color:var(--muted); display:block; margin-bottom:6px }
+    .field{ display:grid; gap:6px }
+    .err{ color:var(--bad); font-size:12px; min-height:18px }
+    .kv{ display:grid; grid-template-columns:1fr auto; gap:6px; align-items:center }
+    .mono{ font-family:var(--mono) }
+    table{ width:100%; border-collapse:collapse }
+    th,td{ padding:10px 8px; border-bottom:1px solid var(--border); text-align:left; white-space:nowrap }
+    thead th{ font-size:12px; color:var(--muted); font-weight:700; position:sticky; top:0; background:var(--card) }
+    .t-right{ text-align:right }
+    .muted{ color:var(--muted) }
+    .note{ color:var(--muted); font-size:12px }
+    .pill{ padding:4px 8px; border-radius:999px; border:1px solid var(--border); font-size:12px; color:var(--muted) }
+    .split{ display:flex; gap:10px; align-items:center; justify-content:space-between; flex-wrap:wrap }
+
+    .toast{
+      position:fixed; left:50%; bottom:18px; transform:translateX(-50%);
+      background:var(--fg); color:var(--bg); padding:12px 14px; border-radius:12px; box-shadow:var(--shadow);
+      z-index:50; display:none; max-width:90vw; font-weight:700
+    }
+
+    /* Simple modal */
+    dialog[open]{ border:none; border-radius:16px; background:var(--bg); color:var(--fg); box-shadow:var(--shadow); width:min(520px, 92vw) }
+    dialog .dl-body{ padding:16px }
+    dialog .dl-actions{ display:flex; gap:8px; padding:14px; border-top:1px solid var(--border); justify-content:flex-end }
+    dialog::backdrop{ background:rgba(0,0,0,.35) }
+
+    footer.nav{
+      position:fixed; bottom:0; left:0; right:0; z-index:15;
+      background: color-mix(in oklab, var(--bg) 92%, transparent);
+      border-top:1px solid var(--border); display:flex; gap:8px; padding:8px 10px; justify-content:space-between; align-items:center
+    }
+    footer.nav .stat{ font-weight:800 }
+    .switch{ display:inline-flex; gap:8px; align-items:center }
+    .switch input{ width:auto; min-height:auto }
+
+    /* Scroll areas */
+    .scrollbox{ max-height:280px; overflow:auto; border:1px solid var(--border); border-radius:12px; background:color-mix(in oklab, var(--bg) 98%, transparent) }
+
+    /* Print: only Semaine */
+    @media print{
+      header.appbar, footer.nav, .tabs, .no-print{ display:none !important }
+      body{ background:#fff; color:#000 }
+      .card, .statusbar{ box-shadow:none; border:1px solid #ccc }
+      section#panel-week{ display:block !important }
+      table{ font-size:12px }
+    }
+  </style>
+</head>
+<body>
+  <header class="appbar" role="banner">
+    <div class="topbar">
+      <div class="brand">Suivi de temps</div>
+      <div class="pill mono" id="clockLive" aria-live="polite">--:--:--</div>
+    </div>
+    <nav class="tabs" role="tablist" aria-label="Sections">
+      <button class="tab" role="tab" id="tab-today" aria-controls="panel-today" aria-selected="true">Aujourd’hui</button>
+      <button class="tab" role="tab" id="tab-week" aria-controls="panel-week" aria-selected="false">Semaine</button>
+      <button class="tab" role="tab" id="tab-history" aria-controls="panel-history" aria-selected="false">Historique</button>
+      <button class="tab" role="tab" id="tab-manual" aria-controls="panel-manual" aria-selected="false">Saisie manuelle</button>
+      <button class="tab" role="tab" id="tab-settings" aria-controls="panel-settings" aria-selected="false">Paramètres</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- AUJOURD’HUI -->
+    <section id="panel-today" class="panel" role="tabpanel" aria-hidden="false" aria-labelledby="tab-today">
+      <div class="grid">
+        <div class="statusbar" id="todayStatus">
+          <div class="row">
+            <span class="badge b-end" id="badgeStatus">Statut</span>
+            <span class="pill" id="lastPunch">Dernier punch : —</span>
+          </div>
+          <div class="row">
+            <span class="pill" id="dayLabel">Aujourd’hui</span>
+            <span class="pill">Fuseau&nbsp;: America/Toronto</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="hd">Punch</div>
+          <div class="bd">
+            <div class="controls">
+              <button id="btnIn" class="btn accent" aria-label="Punch Entrée">Entrée (In)</button>
+              <button id="btnLunchStart" class="btn secondary" aria-label="Début pause">Début pause midi</button>
+              <button id="btnLunchEnd" class="btn secondary" aria-label="Fin pause">Fin pause midi</button>
+              <button id="btnOut" class="btn danger" aria-label="Punch Sortie">Sortie (Out)</button>
+            </div>
+            <div class="row" style="margin-top:10px">
+              <label class="switch"><input type="checkbox" id="noLunchToggle"> <span>Aucune pause midi aujourd’hui</span></label>
+              <button class="btn ghost" id="btnUndo">Annuler dernier punch</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="hd">Résumé du jour</div>
+          <div class="bd">
+            <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px">
+              <div class="kv"><span>Entrée</span><strong class="mono" id="sumIn">—</strong></div>
+              <div class="kv"><span>Pause</span><strong class="mono" id="sumLunch">—</strong></div>
+              <div class="kv"><span>Sortie</span><strong class="mono" id="sumOut">—</strong></div>
+              <div class="kv"><span>Heures (live)</span><strong class="mono" id="sumHours">—</strong></div>
+              <div class="kv"><span>Montant (live)</span><strong class="mono" id="sumPay">—</strong></div>
+            </div>
+            <div class="row" style="margin-top:10px">
+              <button id="btnAddNote" class="btn secondary">Ajouter une note</button>
+              <span class="note" id="notePreview">—</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SEMAINE -->
+    <section id="panel-week" class="panel" role="tabpanel" aria-hidden="true" aria-labelledby="tab-week">
+      <div class="grid">
+        <div class="split">
+          <div class="row">
+            <button class="btn secondary no-print" id="weekPrev" title="Semaine précédente" aria-label="Semaine précédente">◀</button>
+            <span class="pill mono" id="weekRange">Semaine —</span>
+            <button class="btn secondary no-print" id="weekNext" title="Semaine suivante" aria-label="Semaine suivante">▶</button>
+          </div>
+          <div class="row">
+            <strong>Total semaine&nbsp;:</strong>
+            <span class="pill mono" id="weekTotalHours">—</span>
+            <span class="pill mono" id="weekTotalPay">—</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="bd" style="padding:0">
+            <div class="scrollbox" style="max-height:60vh">
+              <table aria-label="Détails de la semaine">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Entrée</th>
+                    <th>Pause</th>
+                    <th>Sortie</th>
+                    <th class="t-right">Heures payées</th>
+                    <th class="t-right">Montant</th>
+                  </tr>
+                </thead>
+                <tbody id="weekTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- HISTORIQUE -->
+    <section id="panel-history" class="panel" role="tabpanel" aria-hidden="true" aria-labelledby="tab-history">
+      <div class="grid">
+        <div class="row">
+          <div class="field" style="max-width:280px">
+            <label for="historyDate">Aller à la semaine contenant la date</label>
+            <input id="historyDate" type="date" />
+          </div>
+          <div class="row grow" style="justify-content:flex-end">
+            <button id="btnExportCSV" class="btn secondary">Exporter CSV</button>
+            <button id="btnExportJSON" class="btn secondary">Exporter JSON</button>
+            <label class="btn secondary no-print" for="importJSON">Importer JSON</label>
+            <input id="importJSON" type="file" accept="application/json" class="no-print" style="display:none" />
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="hd">Semaines enregistrées</div>
+          <div class="bd">
+            <div class="scrollbox" style="max-height:60vh">
+              <table aria-label="Historique des semaines">
+                <thead>
+                  <tr>
+                    <th>Semaine</th>
+                    <th class="t-right">Heures</th>
+                    <th class="t-right">Montant</th>
+                  </tr>
+                </thead>
+                <tbody id="historyTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SAISIE MANUELLE -->
+    <section id="panel-manual" class="panel" role="tabpanel" aria-hidden="true" aria-labelledby="tab-manual">
+      <div class="grid">
+        <div class="card">
+          <div class="hd">Créer / Éditer une journée</div>
+          <div class="bd">
+            <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr))">
+              <div class="field">
+                <label for="mDate">Date</label>
+                <input id="mDate" type="date" />
+                <div class="err" id="eDate"></div>
+              </div>
+              <div class="field">
+                <label for="mIn">Entrée (HH:mm)</label>
+                <input id="mIn" type="time" inputmode="numeric" />
+                <div class="err" id="eIn"></div>
+              </div>
+              <div class="field">
+                <label for="mLunchStart">Début pause (HH:mm, optionnel)</label>
+                <input id="mLunchStart" type="time" inputmode="numeric" />
+                <div class="err" id="eLunchStart"></div>
+              </div>
+              <div class="field">
+                <label for="mLunchEnd">Fin pause (HH:mm, optionnel)</label>
+                <input id="mLunchEnd" type="time" inputmode="numeric" />
+                <div class="err" id="eLunchEnd"></div>
+              </div>
+              <div class="field">
+                <label for="mOut">Sortie (HH:mm)</label>
+                <input id="mOut" type="time" inputmode="numeric" />
+                <div class="err" id="eOut"></div>
+              </div>
+              <div class="field" style="grid-column:1/-1">
+                <label for="mNotes">Notes</label>
+                <textarea id="mNotes" rows="2" placeholder="Optionnel"></textarea>
+              </div>
+              <div class="row" style="grid-column:1/-1; justify-content:flex-end; gap:8px">
+                <button id="btnManualCreate" class="btn accent">Créer / Remplacer</button>
+                <button id="btnManualUpdate" class="btn secondary">Mettre à jour partiellement</button>
+                <button id="btnManualDelete" class="btn danger">Supprimer</button>
+              </div>
+              <div class="note" style="grid-column:1/-1">
+                Règles&nbsp;: les heures doivent être cohérentes (Entrée ≤ Sortie). Si Sortie &lt; Entrée, on considère le **lendemain** (travail de nuit).
+                La pause (si fournie) doit être entièrement comprise dans le poste. Validation stricte avec messages ci-dessus.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="hd">Aperçu de la journée sélectionnée</div>
+          <div class="bd">
+            <div id="manualPreview" class="mono">Sélectionne une date pour voir / éditer.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- PARAMÈTRES -->
+    <section id="panel-settings" class="panel" role="tabpanel" aria-hidden="true" aria-labelledby="tab-settings">
+      <div class="grid">
+        <div class="card">
+          <div class="hd">Préférences</div>
+          <div class="bd">
+            <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr))">
+              <div class="field">
+                <label for="sRate">Taux horaire ($/h)</label>
+                <input id="sRate" type="number" step="0.01" min="0" inputmode="decimal" />
+              </div>
+              <div class="field">
+                <label for="sCurrency">Devise (symbole)</label>
+                <input id="sCurrency" type="text" maxlength="4" />
+              </div>
+              <div class="field">
+                <label for="sRounding">Arrondi (payable)</label>
+                <select id="sRounding">
+                  <option value="0">Aucun</option>
+                  <option value="5">5 min</option>
+                  <option value="10">10 min</option>
+                  <option value="15">15 min</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="sTheme">Thème</label>
+                <select id="sTheme">
+                  <option value="system">Système</option>
+                  <option value="light">Clair</option>
+                  <option value="dark">Sombre</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="row" style="margin-top:12px; gap:8px">
+              <button id="btnSaveSettings" class="btn accent">Enregistrer</button>
+              <button id="btnDemo" class="btn secondary">Démo (générer une semaine)</button>
+              <button id="btnReset" class="btn danger">Réinitialiser les données</button>
+            </div>
+            <div class="note">Jour de début de semaine fixé à Lundi. Langue fr-CA, 24h, fuseau America/Toronto.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="nav no-print" aria-live="polite">
+    <div class="stat" id="liveSummary">—</div>
+    <div class="row">
+      <span class="pill mono" id="footerRate">Taux : $20.00/h</span>
+    </div>
+  </footer>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <!-- Confirm dialog -->
+  <dialog id="confirmDlg" aria-modal="true">
+    <div class="dl-body" id="confirmText">Êtes-vous sûr ?</div>
+    <div class="dl-actions">
+      <button class="btn secondary" id="confirmCancel">Annuler</button>
+      <button class="btn danger" id="confirmOk">Confirmer</button>
+    </div>
+  </dialog>
+
+  <script>
+  ;(() => {
+    // =========================
+    // Module: storage / schema
+    // =========================
+    const Storage = (() => {
+      const KEY = 'novaTimeTracker';
+      const VERSION = 1;
+
+      const defaultState = () => ({
+        schemaVersion: VERSION,
+        editedAt: null,
+        settings: {
+          rate: 20.00,
+          currency: '$',
+          rounding: 0,
+          theme: 'system'
+        },
+        // entries keyed by date "YYYY-MM-DD"
+        entries: {
+          // '2025-08-14': { date, punchIn, lunchStart, lunchEnd, punchOut, notes, manual, editedAt }
+        }
+      });
+
+      function load(){
+        try{
+          const raw = localStorage.getItem(KEY);
+          if(!raw){ const s = defaultState(); save(s); return s; }
+          const state = JSON.parse(raw);
+          return migrate(state);
+        }catch(e){
+          console.warn('Resetting storage due to error', e);
+          const s = defaultState(); save(s); return s;
+        }
+      }
+      function save(state){
+        state.editedAt = new Date().toISOString();
+        localStorage.setItem(KEY, JSON.stringify(state));
+      }
+      function migrate(state){
+        if(!state || typeof state !== 'object') return defaultState();
+        if(!('schemaVersion' in state)) state.schemaVersion = 0;
+        // future migrations
+        if(state.schemaVersion < VERSION){
+          // soft migrations go here
+          state.schemaVersion = VERSION;
+          save(state);
+        }
+        return state;
+      }
+      return { load, save, KEY };
+    })();
+
+    // ===============
+    // Module: time
+    // ===============
+    const Time = (() => {
+      const TZ = 'America/Toronto';
+      const fmtHM = new Intl.DateTimeFormat('fr-CA', { hour:'2-digit', minute:'2-digit', hour12:false, timeZone:TZ });
+      const fmtHMS = new Intl.DateTimeFormat('fr-CA', { hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false, timeZone:TZ });
+      const fmtDate = new Intl.DateTimeFormat('fr-CA', { year:'numeric', month:'2-digit', day:'2-digit', timeZone:TZ });
+
+      function now(){ return new Date(); } // device time; display forced in TZ via Intl
+      function toISO(d){ return new Date(d).toISOString(); }
+      function fromISO(s){ return s ? new Date(s) : null; }
+      function fmtHMStr(d){ return d ? fmtHM.format(d) : '—'; }
+      function fmtHMSStr(d){ return d ? fmtHMS.format(d) : '—'; }
+      function fmtDateYMD(d){ // returns YYYY-MM-DD in TZ
+        const parts = fmtDate.formatToParts(d);
+        const y = parts.find(p=>p.type==='year').value;
+        const m = parts.find(p=>p.type==='month').value;
+        const da = parts.find(p=>p.type==='day').value;
+        return `${y}-${m}-${da}`;
+      }
+      function makeDateFromYMD(ymd, hm='00:00'){
+        // Interpret YMD in TZ at local browser clock, build Date by splitting
+        const [Y,M,D] = ymd.split('-').map(Number);
+        const [h,mi] = hm.split(':').map(n => Number(n||0));
+        // Construct a Date in local time; formatting always uses TZ so ok
+        const d = new Date();
+        d.setFullYear(Y); d.setMonth(M-1); d.setDate(D); d.setHours(h, mi, 0, 0);
+        return d;
+      }
+      function addDays(date, days){
+        const d = new Date(date); d.setDate(d.getDate()+days); return d;
+      }
+      function weekStart(date){ // Monday
+        const d = new Date(date);
+        const day = (d.getDay()+6)%7; // 0=Mon
+        d.setDate(d.getDate()-day);
+        d.setHours(0,0,0,0);
+        return d;
+      }
+      function weekRangeLabel(date){
+        const start = weekStart(date);
+        const end = addDays(start,6);
+        const f = (dd)=>fmtDate.format(dd);
+        return `${f(start)} → ${f(end)}`;
+      }
+
+      function diffMS(a,b){ return b - a; } // ms
+      function msToHM(ms){
+        if(ms <= 0) return {h:0, m:0};
+        const totalMin = Math.floor(ms/60000);
+        const h = Math.floor(totalMin/60);
+        const m = totalMin % 60;
+        return {h, m};
+      }
+      function hmToString(h,m){ return `${h}:${String(m).padStart(2,'0')}` }
+      function minutesToDec(min){ return +(min/60).toFixed(2) }
+      function roundMinutes(min, step){
+        if(!step) return min;
+        return Math.round(min/step)*step;
+      }
+      return { TZ, now, toISO, fromISO, fmtHMStr, fmtHMSStr, fmtDateYMD, makeDateFromYMD, addDays, weekStart, weekRangeLabel, diffMS, msToHM, hmToString, minutesToDec, roundMinutes };
+    })();
+
+    // ===============
+    // Module: calc
+    // ===============
+    const Calc = (() => {
+      function dayDurations(entry, live=false){
+        if(!entry || !entry.punchIn) return { workMS:0, pauseMS:0 };
+        const inD = new Date(entry.punchIn);
+        const outD = entry.punchOut ? new Date(entry.punchOut) : (live ? Time.now() : null);
+
+        let workMS = 0, pauseMS = 0;
+
+        if(outD){
+          // handle overnight: if out < in => +1 day
+          let outAdj = new Date(outD);
+          if(outAdj < inD) outAdj = Time.addDays(outAdj, 1);
+          workMS = Time.diffMS(inD, outAdj);
+        }else{
+          workMS = Time.diffMS(inD, Time.now());
+        }
+
+        if(entry.lunchStart){
+          const ls = new Date(entry.lunchStart);
+          let le = entry.lunchEnd ? new Date(entry.lunchEnd) : (live ? Time.now() : null);
+          if(le){
+            // if lunch end before start (rare), assume cross midnight but keep within shift
+            if(le < ls) le = Time.addDays(le,1);
+            pauseMS = Math.max(0, Time.diffMS(ls, le));
+          }else{
+            pauseMS = Math.max(0, Time.diffMS(ls, Time.now()));
+          }
+        }
+
+        // If "no lunch today" the UI sets lunchStart/lunchEnd to null anyway
+        const netMS = Math.max(0, workMS - pauseMS);
+        return { workMS: netMS, pauseMS };
+      }
+
+      function payableMinutes(entry, roundingStep, live=false){
+        const { workMS } = dayDurations(entry, live);
+        const rawMin = Math.floor(workMS/60000);
+        return Time.roundMinutes(rawMin, roundingStep);
+      }
+
+      function weekTotals(entries, weekStartDate, settings){
+        const step = settings.rounding|0;
+        let minutes = 0;
+        for(const d of eachWeekDates(weekStartDate)){
+          const ymd = Time.fmtDateYMD(d);
+          const e = entries[ymd];
+          if(e && e.punchIn && e.punchOut){ // only completed days
+            minutes += payableMinutes(e, step, false);
+          }
+        }
+        return minutes;
+      }
+
+      function eachWeekDates(weekStartDate){
+        const arr = [];
+        for(let i=0;i<7;i++) arr.push(Time.addDays(weekStartDate,i));
+        return arr;
+      }
+
+      return { dayDurations, payableMinutes, weekTotals, eachWeekDates };
+    })();
+
+    // =================
+    // Module: validate
+    // =================
+    const Validate = (() => {
+      function manual(payload){
+        // payload: {date, inHM, lunchStartHM?, lunchEndHM?, outHM, notes}
+        const errs = {};
+        if(!payload.date) errs.date = 'Date requise.';
+        if(!payload.inHM) errs.in = 'Entrée requise (HH:mm).';
+        if(!payload.outHM) errs.out = 'Sortie requise (HH:mm).';
+        if(Object.keys(errs).length) return { ok:false, errs };
+
+        const inD = Time.makeDateFromYMD(payload.date, payload.inHM);
+        let outD = Time.makeDateFromYMD(payload.date, payload.outHM);
+        if(outD < inD){ outD = Time.addDays(outD, 1); } // overnight ok
+
+        if(payload.lunchStartHM){
+          const ls = Time.makeDateFromYMD(payload.date, payload.lunchStartHM);
+          let le = payload.lunchEndHM ? Time.makeDateFromYMD(payload.date, payload.lunchEndHM) : null;
+          if(le && le < ls) le = Time.addDays(le,1);
+          // Pause must be within [inD, outD]
+          if(ls < inD || (le && le > outD)){
+            errs.lunchStart = 'La pause doit être comprise dans le poste.';
+          }
+          if(payload.lunchEndHM && !le){
+            errs.lunchEnd = 'Fin de pause invalide.';
+          }
+          if(le && le <= ls){
+            errs.lunchEnd = 'Fin de pause doit être après le début.';
+          }
+        }else if(payload.lunchEndHM){
+          errs.lunchStart = 'Début de pause requis si une fin de pause est fournie.';
+        }
+
+        if(outD <= inD) errs.out = 'Sortie doit être après Entrée (ou le lendemain).';
+
+        return { ok:Object.keys(errs).length===0, errs };
+      }
+      return { manual };
+    })();
+
+    // =========
+    // state
+    // =========
+    const State = (() => {
+      let state = Storage.load();
+
+      function get(){ return state; }
+      function set(next){ state = next; Storage.save(state); }
+      function update(mutator){
+        const next = JSON.parse(JSON.stringify(state));
+        mutator(next);
+        set(next);
+      }
+
+      function ensureDate(dateYMD){
+        update(s => {
+          if(!s.entries[dateYMD]){
+            s.entries[dateYMD] = { date: dateYMD, punchIn:null, lunchStart:null, lunchEnd:null, punchOut:null, notes:'', manual:false, editedAt:null };
+          }
+        });
+        return get().entries[dateYMD];
+      }
+
+      function record(dateYMD, field, value){
+        update(s => {
+          const e = s.entries[dateYMD] || (s.entries[dateYMD] = { date: dateYMD, punchIn:null, lunchStart:null, lunchEnd:null, punchOut:null, notes:'', manual:false, editedAt:null });
+          e[field] = value;
+          e.editedAt = new Date().toISOString();
+        });
+      }
+
+      function remove(dateYMD){
+        update(s => { delete s.entries[dateYMD]; });
+      }
+
+      return { get, set, update, ensureDate, record, remove };
+    })();
+
+    // =========
+    // UI util
+    // =========
+    const UI = (() => {
+      const qs = sel => document.querySelector(sel);
+      const qsa = sel => Array.from(document.querySelectorAll(sel));
+      const toastEl = qs('#toast');
+
+      function setTheme(theme){
+        if(theme==='system'){
+          const dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+          document.documentElement.setAttribute('data-theme', dark ? 'dark':'light');
+        }else{
+          document.documentElement.setAttribute('data-theme', theme);
+        }
+      }
+
+      function toast(msg){
+        toastEl.textContent = msg;
+        toastEl.style.display = 'block';
+        clearTimeout(toastEl._t);
+        toastEl._t = setTimeout(()=> toastEl.style.display='none', 2100);
+      }
+
+      function confirmDialog(text){
+        return new Promise(resolve=>{
+          const dlg = qs('#confirmDlg');
+          qs('#confirmText').textContent = text;
+          const ok = ()=>{ dlg.close(); cleanup(); resolve(true); };
+          const cancel = ()=>{ dlg.close(); cleanup(); resolve(false); };
+          function cleanup(){
+            qs('#confirmOk').removeEventListener('click', ok);
+            qs('#confirmCancel').removeEventListener('click', cancel);
+          }
+          qs('#confirmOk').addEventListener('click', ok);
+          qs('#confirmCancel').addEventListener('click', cancel);
+          dlg.showModal();
+        });
+      }
+
+      function money(value, currency){
+        return `${currency}${value.toFixed(2)}`;
+      }
+
+      return { qs, qsa, toast, confirmDialog, setTheme, money };
+    })();
+
+    // ==============
+    // Module: export
+    // ==============
+    const Exporter = (() => {
+      function toCSV(state){
+        const rows = [['Date','Entrée','Début pause','Fin pause','Sortie','Heures (h:mm)','Heures décimales','Montant']];
+        const { entries, settings } = state;
+        const step = settings.rounding|0;
+        const dates = Object.keys(entries).sort();
+        for(const ymd of dates){
+          const e = entries[ymd];
+          const paidMin = Calc.payableMinutes(e, step, false);
+          const hm = Time.msToHM(paidMin*60000);
+          const dec = Time.minutesToDec(paidMin);
+          const pay = dec * settings.rate;
+
+          rows.push([
+            ymd,
+            e.punchIn ? Time.fmtHMStr(new Date(e.punchIn)) : '',
+            e.lunchStart ? Time.fmtHMStr(new Date(e.lunchStart)) : '',
+            e.lunchEnd ? Time.fmtHMStr(new Date(e.lunchEnd)) : '',
+            e.punchOut ? Time.fmtHMStr(new Date(e.punchOut)) : '',
+            Time.hmToString(hm.h, hm.m),
+            dec.toFixed(2),
+            pay.toFixed(2)
+          ]);
+        }
+        // Sécurité: pas de regex multi-ligne cassée; on prépare les helpers hors du map
+        const needsQuote = /[",\n]/;
+        const escapeQuotes = /"/g;
+        return rows
+          .map(r => r.map(cell => {
+            const s = String(cell ?? '');
+            return needsQuote.test(s) ? `"${s.replace(escapeQuotes,'""')}"` : s;
+          }).join(','))
+          .join('\n');
+      }
+
+      function toJSON(state){
+        // Export minimal mais complet
+        const payload = {
+          schemaVersion: state.schemaVersion,
+          exportedAt: new Date().toISOString(),
+          settings: state.settings,
+          entries: state.entries
+        };
+        return JSON.stringify(payload, null, 2);
+      }
+
+      function download(filename, content, type='text/plain'){
+        const blob = new Blob([content], {type});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = filename; a.click();
+        setTimeout(()=> URL.revokeObjectURL(url), 1000);
+      }
+
+      return { toCSV, toJSON, download };
+    })();
+
+    // =============
+    // Module: import
+    // =============
+    const Importer = (() => {
+      function parseAndValidate(text){
+        try{
+          const data = JSON.parse(text);
+          if(Array.isArray(data)){
+            // Accept array of entries objects
+            const entries = {};
+            for(const e of data){
+              if(e && typeof e.date === 'string') entries[e.date] = normalizeEntry(e);
+            }
+            return { entries, settings:null };
+          }else if(data && typeof data === 'object'){
+            const entries = {};
+            if(data.entries && typeof data.entries === 'object'){
+              for(const [k, v] of Object.entries(data.entries)){
+                entries[k] = normalizeEntry({ ...v, date:k });
+              }
+            }
+            const settings = data.settings && typeof data.settings === 'object' ? data.settings : null;
+            return { entries, settings };
+          }
+        }catch(e){
+          return null;
+        }
+        return null;
+      }
+
+      function normalizeEntry(e){
+        return {
+          date: e.date,
+          punchIn: e.punchIn ?? null,
+          lunchStart: e.lunchStart ?? null,
+          lunchEnd: e.lunchEnd ?? null,
+          punchOut: e.punchOut ?? null,
+          notes: e.notes ?? '',
+          manual: !!e.manual,
+          editedAt: e.editedAt ?? null
+        };
+      }
+
+      async function mergeIntoState(payload){
+        if(!payload) { UI.toast('JSON invalide.'); return; }
+        const current = State.get();
+        const incoming = payload.entries || {};
+        let conflicts = [];
+        for(const [d, e] of Object.entries(incoming)){
+          if(current.entries[d]){
+            conflicts.push(d);
+          }
+        }
+        let proceed = true;
+        if(conflicts.length){
+          proceed = await UI.confirmDialog(`Des entrées existent déjà pour ${conflicts.length} jour(s). Les remplacer ?`);
+        }
+        if(!proceed) return;
+
+        State.update(s => {
+          for(const [d, e] of Object.entries(incoming)){
+            s.entries[d] = e;
+          }
+          if(payload.settings){
+            s.settings = { ...s.settings, ...payload.settings };
+          }
+        });
+        UI.toast('Import terminé.');
+      }
+
+      return { parseAndValidate, mergeIntoState };
+    })();
+
+    // =====
+    // App
+    // =====
+    const App = (() => {
+      const $ = UI.qs, $$ = UI.qsa;
+
+      function init(){
+        bindTabs();
+        bindToday();
+        bindWeek();
+        bindHistory();
+        bindManual();
+        bindSettings();
+        startClock();
+        renderAll();
+        applyTheme();
+      }
+
+      function bindTabs(){
+        const tabs = $$('.tab');
+        tabs.forEach(t => t.addEventListener('click', () => {
+          const id = t.id.replace('tab-','panel-');
+          tabs.forEach(x => x.setAttribute('aria-selected', x===t ? 'true': 'false'));
+          $$('.panel').forEach(p => p.setAttribute('aria-hidden', p.id===id ? 'false' : 'true'));
+          // Focus management
+          document.getElementById(id).querySelector('button, input, select, textarea')?.focus({preventScroll:false});
+          // Refresh view-specific renders
+          if(id==='panel-week') renderWeek();
+          if(id==='panel-history') renderHistory();
+          if(id==='panel-manual') renderManualPreview();
+          if(id==='panel-settings') renderSettings();
+        }));
+      }
+
+      function startClock(){
+        function tick(){
+          $('#clockLive').textContent = Time.fmtHMSStr(Time.now());
+          renderTodayLive();
+          renderFooter();
+        }
+        tick();
+        setInterval(tick, 1000);
+      }
+
+      // ===== TODAY =====
+      function bindToday(){
+        const btnIn = $('#btnIn');
+        const btnOut = $('#btnOut');
+        const btnLS = $('#btnLunchStart');
+        const btnLE = $('#btnLunchEnd');
+        const btnUndo = $('#btnUndo');
+        const btnNote = $('#btnAddNote');
+        const noLunch = $('#noLunchToggle');
+
+        btnIn.addEventListener('click', () => doPunch('punchIn'));
+        btnOut.addEventListener('click', () => doPunch('punchOut'));
+        btnLS.addEventListener('click', () => doLunch(true));
+        btnLE.addEventListener('click', () => doLunch(false));
+        btnUndo.addEventListener('click', () => undoLast());
+        btnNote.addEventListener('click', () => addNote());
+        noLunch.addEventListener('change', () => {
+          const ymd = todayYMD();
+          const e = State.get().entries[ymd];
+          if(noLunch.checked){
+            State.record(ymd, 'lunchStart', null);
+            State.record(ymd, 'lunchEnd', null);
+            UI.toast('Aucune pause pour aujourd’hui.');
+          }
+          renderToday();
+        });
+      }
+
+      function todayYMD(){ return Time.fmtDateYMD(Time.now()); }
+
+      function doPunch(kind){
+        const ymd = todayYMD();
+        State.ensureDate(ymd);
+        const e = State.get().entries[ymd];
+
+        if(kind==='punchIn'){
+          if(e.punchIn){ UI.toast('Entrée déjà enregistrée.'); return; }
+          State.record(ymd, 'punchIn', Time.toISO(Time.now()));
+          UI.toast(`Entrée enregistrée à ${Time.fmtHMStr(new Date(State.get().entries[ymd].punchIn))}`);
+        }
+        if(kind==='punchOut'){
+          if(!e.punchIn){ UI.toast('Impossible : Entrée manquante.'); return; }
+          if(e.punchOut){ UI.toast('Sortie déjà enregistrée.'); return; }
+          // If lunch was started but not ended, close it at now
+          if(e.lunchStart && !e.lunchEnd){
+            State.record(ymd, 'lunchEnd', Time.toISO(Time.now()));
+          }
+          State.record(ymd, 'punchOut', Time.toISO(Time.now()));
+          UI.toast(`Sortie enregistrée à ${Time.fmtHMStr(new Date(State.get().entries[ymd].punchOut))}`);
+        }
+        renderToday();
+        renderWeek(); renderHistory();
+      }
+
+      function doLunch(start){
+        const ymd = todayYMD();
+        State.ensureDate(ymd);
+        const e = State.get().entries[ymd];
+        if(!e.punchIn){ UI.toast('Impossible : Entrée manquante.'); return; }
+        if(start){
+          if(e.lunchStart && !e.lunchEnd){ UI.toast('Pause déjà en cours.'); return; }
+          State.record(ymd, 'lunchStart', Time.toISO(Time.now()));
+          State.record(ymd, 'lunchEnd', null);
+          UI.toast(`Début de pause à ${Time.fmtHMStr(new Date(State.get().entries[ymd].lunchStart))}`);
+        }else{
+          if(!e.lunchStart){ UI.toast('Impossible : aucun début de pause.'); return; }
+          if(e.lunchEnd){ UI.toast('Fin de pause déjà enregistrée.'); return; }
+          State.record(ymd, 'lunchEnd', Time.toISO(Time.now()));
+          UI.toast(`Fin de pause à ${Time.fmtHMStr(new Date(State.get().entries[ymd].lunchEnd))}`);
+        }
+        renderToday();
+        renderWeek(); renderHistory();
+      }
+
+      function undoLast(){
+        const ymd = todayYMD();
+        const e = State.get().entries[ymd];
+        if(!e){ UI.toast('Aucun punch aujourd’hui.'); return; }
+        // order: out > lunchEnd > lunchStart > in
+        const fields = ['punchOut','lunchEnd','lunchStart','punchIn'];
+        const last = fields.find(f => !!e[f]);
+        if(!last){ UI.toast('Rien à annuler.'); return; }
+        State.record(ymd, last, null);
+        UI.toast(`Dernier punch annulé (${last}).`);
+        renderToday();
+        renderWeek(); renderHistory();
+      }
+
+      function addNote(){
+        const ymd = todayYMD();
+        State.ensureDate(ymd);
+        const msg = prompt('Ajouter une note pour aujourd’hui :', State.get().entries[ymd]?.notes || '');
+        if(msg!==null){
+          State.record(ymd, 'notes', msg);
+          UI.toast('Note enregistrée.');
+          renderToday();
+        }
+      }
+
+      function renderToday(){
+        const ymd = todayYMD();
+        const e = State.get().entries[ymd] || null;
+        $('#dayLabel').textContent = `Aujourd’hui — ${ymd}`;
+        $('#sumIn').textContent = e?.punchIn ? Time.fmtHMStr(new Date(e.punchIn)) : '—';
+        $('#sumOut').textContent = e?.punchOut ? Time.fmtHMStr(new Date(e.punchOut)) : '—';
+
+        // lunch summary
+        let lunchDisp = '—';
+        if(e?.lunchStart){
+          const ls = Time.fmtHMStr(new Date(e.lunchStart));
+          lunchDisp = ls + (e.lunchEnd ? ' → ' + Time.fmtHMStr(new Date(e.lunchEnd)) : ' → …');
+        }
+        $('#sumLunch').textContent = lunchDisp;
+
+        // status badge
+        const badge = $('#badgeStatus');
+        let status = 'Terminé', cls='b-end';
+        if(e?.punchIn && !e.punchOut){
+          if(e.lunchStart && !e.lunchEnd){ status='En pause'; cls='b-pause'; }
+          else { status='En travail'; cls='b-work'; }
+        }
+        badge.className = `badge ${cls}`;
+        badge.textContent = status;
+
+        $('#notePreview').textContent = e?.notes ? `Note: ${e.notes}` : '—';
+
+        // last punch
+        const last = e?.punchOut || e?.lunchEnd || e?.lunchStart || e?.punchIn;
+        $('#lastPunch').textContent = 'Dernier punch : ' + (last ? Time.fmtHMStr(new Date(last)) : '—');
+
+        renderTodayLive();
+      }
+
+      function renderTodayLive(){
+        const ymd = todayYMD();
+        const e = State.get().entries[ymd] || null;
+        const settings = State.get().settings;
+        if(!e){ $('#sumHours').textContent = '—'; $('#sumPay').textContent = '—'; renderFooter(); return; }
+        const { workMS, pauseMS } = Calc.dayDurations(e, true);
+        const paidMin = Calc.payableMinutes(e, settings.rounding|0, true);
+        const hm = Time.msToHM(workMS);
+        $('#sumHours').textContent = Time.hmToString(hm.h, hm.m);
+        $('#sumPay').textContent = UI.money(Time.minutesToDec(paidMin)*settings.rate, settings.currency);
+        renderFooter();
+      }
+
+      function renderFooter(){
+        const s = State.get().settings;
+        $('#footerRate').textContent = `Taux : ${s.currency}${Number(s.rate).toFixed(2)}/h`;
+        const ymd = todayYMD();
+        const e = State.get().entries[ymd] || null;
+        let live = '—';
+        if(e){
+          const { workMS } = Calc.dayDurations(e, true);
+          const hm = Time.msToHM(workMS);
+          live = `Aujourd’hui: ${Time.hmToString(hm.h, hm.m)}`;
+        }
+        $('#liveSummary').textContent = live;
+      }
+
+      // ===== WEEK =====
+      let currentWeekStart = Time.weekStart(Time.now());
+
+      function bindWeek(){
+        $('#weekPrev').addEventListener('click', ()=>{ currentWeekStart = Time.addDays(currentWeekStart, -7); renderWeek(); });
+        $('#weekNext').addEventListener('click', ()=>{ currentWeekStart = Time.addDays(currentWeekStart, 7); renderWeek(); });
+      }
+
+      function renderWeek(){
+        $('#weekRange').textContent = Time.weekRangeLabel(currentWeekStart);
+        const body = $('#weekTable'); body.innerHTML='';
+        const { entries, settings } = State.get();
+        const step = settings.rounding|0;
+        let totalMin = 0;
+
+        for(const d of Calc.eachWeekDates(currentWeekStart)){
+          const ymd = Time.fmtDateYMD(d);
+          const e = entries[ymd];
+          const tr = document.createElement('tr');
+          const inTxt = e?.punchIn ? Time.fmtHMStr(new Date(e.punchIn)) : '—';
+          const pauseTxt = e?.lunchStart ? `${Time.fmtHMStr(new Date(e.lunchStart))} ${e.lunchEnd? '→ '+Time.fmtHMStr(new Date(e.lunchEnd)):'→ …'}` : '—';
+          const outTxt = e?.punchOut ? Time.fmtHMStr(new Date(e.punchOut)) : '—';
+
+          let hTxt='—', payTxt='—';
+          if(e?.punchIn && e?.punchOut){
+            const paidMin = Calc.payableMinutes(e, step, false);
+            const hm = Time.msToHM(paidMin*60000);
+            totalMin += paidMin;
+            hTxt = Time.hmToString(hm.h, hm.m);
+            payTxt = UI.money(Time.minutesToDec(paidMin)*settings.rate, settings.currency);
+          }
+
+          tr.innerHTML = `
+            <td class="mono">${ymd}</td>
+            <td class="mono">${inTxt}</td>
+            <td class="mono">${pauseTxt}</td>
+            <td class="mono">${outTxt}</td>
+            <td class="t-right mono">${hTxt}</td>
+            <td class="t-right mono">${payTxt}</td>
+          `;
+          body.appendChild(tr);
+        }
+
+        const totalHM = Time.msToHM(totalMin*60000);
+        $('#weekTotalHours').textContent = `Heures: ${Time.hmToString(totalHM.h,totalHM.m)}`;
+        $('#weekTotalPay').textContent = `Salaire: ${UI.money(Time.minutesToDec(totalMin)*settings.rate, settings.currency)}`;
+      }
+
+      // ===== HISTORY =====
+      function bindHistory(){
+        $('#historyDate').addEventListener('change', (e)=>{
+          const d = e.target.value ? Time.makeDateFromYMD(e.target.value) : Time.now();
+          currentWeekStart = Time.weekStart(d);
+          UI.toast('Navigué à la semaine sélectionnée.');
+          renderWeek();
+        });
+
+        $('#btnExportCSV').addEventListener('click', ()=>{
+          Exporter.download(`suivi-temps-${Date.now()}.csv`, Exporter.toCSV(State.get()), 'text/csv;charset=utf-8');
+        });
+        $('#btnExportJSON').addEventListener('click', ()=>{
+          Exporter.download(`suivi-temps-${Date.now()}.json`, Exporter.toJSON(State.get()), 'application/json');
+        });
+        $('#importJSON').addEventListener('change', async (ev)=>{
+          const file = ev.target.files?.[0];
+          if(!file) return;
+          const text = await file.text();
+          const payload = Importer.parseAndValidate(text);
+          await Importer.mergeIntoState(payload);
+          renderAll();
+          ev.target.value = '';
+        });
+      }
+
+      function renderHistory(){
+        const { entries, settings } = State.get();
+        const dates = Object.keys(entries).sort();
+        const weeks = new Map(); // key = weekStartYMD
+        for(const ymd of dates){
+          const d = Time.makeDateFromYMD(ymd);
+          const ws = Time.weekStart(d);
+          const key = Time.fmtDateYMD(ws);
+          if(!weeks.has(key)) weeks.set(key, []);
+          weeks.get(key).push(ymd);
+        }
+        const tbody = $('#historyTable'); tbody.innerHTML='';
+        const step = settings.rounding|0;
+
+        for(const [wsYMD, days] of Array.from(weeks.entries()).sort()){
+          let minutes = 0;
+          for(const ymd of days){
+            const e = State.get().entries[ymd];
+            if(e.punchIn && e.punchOut) minutes += Calc.payableMinutes(e, step, false);
+          }
+          const hm = Time.msToHM(minutes*60000);
+          const tr = document.createElement('tr');
+          const wsDate = Time.makeDateFromYMD(wsYMD);
+          tr.innerHTML = `
+            <td class="mono">${Time.weekRangeLabel(wsDate)}</td>
+            <td class="t-right mono">${Time.hmToString(hm.h, hm.m)}</td>
+            <td class="t-right mono">${UI.money(Time.minutesToDec(minutes)*settings.rate, settings.currency)}</td>
+          `;
+          tbody.appendChild(tr);
+        }
+        if(!tbody.children.length){
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td colspan="3" class="muted">Aucune donnée encore. Utilise l’onglet Aujourd’hui ou la Saisie manuelle.</td>`;
+          tbody.appendChild(tr);
+        }
+      }
+
+      // ===== MANUAL =====
+      function bindManual(){
+        const date = $('#mDate');
+        const inputs = ['mIn','mLunchStart','mLunchEnd','mOut','mNotes'].map(id=>$('#'+id));
+        date.value = Time.fmtDateYMD(Time.now());
+
+        $('#btnManualCreate').addEventListener('click', ()=>{
+          const p = collectManual();
+          const v = Validate.manual(p);
+          showManualErrors(v.errs);
+          if(!v.ok) return;
+
+          const inD = Time.makeDateFromYMD(p.date, p.inHM);
+          let outD = Time.makeDateFromYMD(p.date, p.outHM);
+          if(outD < inD) outD = Time.addDays(outD,1);
+
+          State.update(s => {
+            s.entries[p.date] = {
+              date: p.date,
+              punchIn: Time.toISO(inD),
+              lunchStart: p.lunchStartHM ? Time.toISO(Time.makeDateFromYMD(p.date, p.lunchStartHM)) : null,
+              lunchEnd: p.lunchEndHM ? Time.toISO(Time.makeDateFromYMD(p.date, p.lunchEndHM)) : null,
+              punchOut: Time.toISO(outD),
+              notes: p.notes || '',
+              manual: true,
+              editedAt: new Date().toISOString()
+            };
+          });
+          UI.toast('Journée créée / remplacée.');
+          renderManualPreview(); renderWeek(); renderHistory();
+        });
+
+        $('#btnManualUpdate').addEventListener('click', ()=>{
+          const p = collectManual();
+          if(!p.date){ showManualErrors({date:'Date requise.'}); return; }
+          const existed = !!State.get().entries[p.date];
+          if(!existed){ UI.toast('Aucune entrée existante pour mettre à jour. Utilise "Créer / Remplacer".'); return; }
+
+          // Partial updates with validation on provided pairs
+          const current = State.get().entries[p.date];
+          let inHM = p.inHM || (current.punchIn ? Time.fmtHMStr(new Date(current.punchIn)) : null);
+          let outHM = p.outHM || (current.punchOut ? Time.fmtHMStr(new Date(current.punchOut)) : null);
+          if(!inHM || !outHM){ showManualErrors({in:'Entrée requise.', out:'Sortie requise.'}); return; }
+
+          const v = Validate.manual({ date:p.date, inHM, lunchStartHM:p.lunchStartHM||undefined, lunchEndHM:p.lunchEndHM||undefined, outHM, notes:p.notes||current.notes });
+          showManualErrors(v.errs);
+          if(!v.ok) return;
+
+          State.update(s => {
+            const e = s.entries[p.date];
+            if(p.inHM) e.punchIn = Time.toISO(Time.makeDateFromYMD(p.date, p.inHM));
+            if(p.outHM){
+              let outD = Time.makeDateFromYMD(p.date, p.outHM);
+              const inD = e.punchIn ? new Date(e.punchIn) : Time.makeDateFromYMD(p.date, inHM);
+              if(outD < inD) outD = Time.addDays(outD,1);
+              e.punchOut = Time.toISO(outD);
+            }
+            if(p.lunchStartHM !== '') e.lunchStart = p.lunchStartHM ? Time.toISO(Time.makeDateFromYMD(p.date, p.lunchStartHM)) : null;
+            if(p.lunchEndHM !== '') e.lunchEnd = p.lunchEndHM ? Time.toISO(Time.makeDateFromYMD(p.date, p.lunchEndHM)) : null;
+            if(p.notes !== undefined) e.notes = p.notes;
+            e.manual = true;
+            e.editedAt = new Date().toISOString();
+          });
+          UI.toast('Journée mise à jour.');
+          renderManualPreview(); renderWeek(); renderHistory();
+        });
+
+        $('#btnManualDelete').addEventListener('click', async ()=>{
+          const d = $('#mDate').value;
+          if(!d || !State.get().entries[d]){ UI.toast('Aucune entrée à supprimer.'); return; }
+          const ok = await UI.confirmDialog(`Supprimer la journée ${d} ?`);
+          if(!ok) return;
+          State.remove(d);
+          UI.toast('Supprimé.');
+          renderManualPreview(); renderWeek(); renderHistory();
+        });
+
+        $('#mDate').addEventListener('change', renderManualPreview);
+        inputs.forEach(i => i.addEventListener('input', ()=>showManualErrors({})));
+      }
+
+      function collectManual(){
+        return {
+          date: $('#mDate').value,
+          inHM: $('#mIn').value,
+          lunchStartHM: $('#mLunchStart').value,
+          lunchEndHM: $('#mLunchEnd').value,
+          outHM: $('#mOut').value,
+          notes: $('#mNotes').value
+        };
+      }
+      function showManualErrors(errs){
+        const map = { date:'eDate', in:'eIn', lunchStart:'eLunchStart', lunchEnd:'eLunchEnd', out:'eOut' };
+        for(const key of Object.keys(map)){
+          const el = document.getElementById(map[key]);
+          el.textContent = errs?.[key] || '';
+        }
+      }
+      function renderManualPreview(){
+        const d = $('#mDate').value;
+        const e = State.get().entries[d];
+        const box = $('#manualPreview');
+        if(!e){ box.textContent = 'Aucune entrée pour cette date.'; return; }
+        const { workMS, pauseMS } = Calc.dayDurations(e, false);
+        const hm = Time.msToHM(workMS), pm = Time.msToHM(pauseMS);
+        box.innerHTML = `
+          <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:8px">
+            <div>Entrée: <strong class="mono">${e.punchIn?Time.fmtHMStr(new Date(e.punchIn)):'—'}</strong></div>
+            <div>Pause: <strong class="mono">${e.lunchStart?Time.fmtHMStr(new Date(e.lunchStart)):'—'} ${e.lunchStart?'→':''} ${e.lunchEnd?Time.fmtHMStr(new Date(e.lunchEnd)):(e.lunchStart?'…':'')}</strong></div>
+            <div>Sortie: <strong class="mono">${e.punchOut?Time.fmtHMStr(new Date(e.punchOut)):'—'}</strong></div>
+            <div>Durée: <strong class="mono">${Time.hmToString(hm.h,hm.m)}</strong></div>
+            <div>Pause cumulée: <strong class="mono">${Time.hmToString(pm.h,pm.m)}</strong></div>
+            <div>Notes: <span>${e.notes || '—'}</span></div>
+          </div>
+        `;
+      }
+
+      // ===== SETTINGS =====
+      function bindSettings(){
+        $('#btnSaveSettings').addEventListener('click', ()=>{
+          const rate = Math.max(0, Number($('#sRate').value||0));
+          const currency = ($('#sCurrency').value || '$').trim();
+          const rounding = Number($('#sRounding').value||0);
+          const theme = $('#sTheme').value || 'system';
+          State.update(s => { s.settings = { ...s.settings, rate, currency, rounding, theme }; });
+          applyTheme();
+          UI.toast('Paramètres enregistrés.');
+          renderAll();
+        });
+
+        $('#btnDemo').addEventListener('click', ()=>{
+          generateDemoWeek();
+          UI.toast('Données démo ajoutées.');
+          renderAll();
+        });
+
+        $('#btnReset').addEventListener('click', async ()=>{
+          const ok = await UI.confirmDialog('Réinitialiser toutes les données ? Écris "RESET" pour confirmer dans le champ suivant.');
+          if(!ok) return;
+          const input = prompt('Tape "RESET" pour confirmer :');
+          if(input!=="RESET"){ UI.toast('Annulé.'); return; }
+          localStorage.removeItem(Storage.KEY);
+          location.reload();
+        });
+      }
+
+      function renderSettings(){
+        const s = State.get().settings;
+        $('#sRate').value = s.rate;
+        $('#sCurrency').value = s.currency;
+        $('#sRounding').value = String(s.rounding|0);
+        $('#sTheme').value = s.theme || 'system';
+      }
+
+      function applyTheme(){
+        UI.setTheme(State.get().settings.theme || 'system');
+      }
+
+      // ===== RENDER ALL =====
+      function renderAll(){
+        renderToday(); renderWeek(); renderHistory(); renderSettings();
+      }
+
+      // ===== DEMO =====
+      function generateDemoWeek(){
+        const base = Time.weekStart(Time.now());
+        const mk = (d, inHM, lsHM, leHM, outHM, note='')=>{
+          const ymd = Time.fmtDateYMD(d);
+          const pack = {
+            date: ymd,
+            punchIn: Time.toISO(Time.makeDateFromYMD(ymd, inHM)),
+            lunchStart: lsHM ? Time.toISO(Time.makeDateFromYMD(ymd, lsHM)) : null,
+            lunchEnd: leHM ? Time.toISO(Time.makeDateFromYMD(ymd, leHM)) : null,
+            punchOut: Time.toISO((()=>{
+              let out = Time.makeDateFromYMD(ymd, outHM);
+              const inD = Time.makeDateFromYMD(ymd, inHM);
+              if(out < inD) out = Time.addDays(out,1);
+              return out;
+            })()),
+            notes: note,
+            manual: true,
+            editedAt: new Date().toISOString()
+          };
+          State.update(s => { s.entries[ymd] = pack; });
+        };
+        mk(base, '08:00','12:00','12:30','16:15','Démo Lundi');
+        mk(Time.addDays(base,1), '08:05','12:03','12:35','16:02');
+        mk(Time.addDays(base,2), '07:58',null,null,'15:58', 'Aucune pause');
+        mk(Time.addDays(base,3), '22:00','00:00','00:20','02:00','Nuit');
+        mk(Time.addDays(base,4), '09:15','12:40','13:10','17:05');
+      }
+
+      return { init };
+    })();
+
+    // Kickoff
+    document.addEventListener('DOMContentLoaded', App.init, { once:true });
+  })();
+  </script>
+</body>
+</html>
